@@ -1,4 +1,5 @@
 """인스타 릴스 → 일본어 텍스트 추출 웹앱 (Streamlit + yt-dlp + faster-whisper)"""
+import gc
 import os
 import subprocess
 import tempfile
@@ -11,9 +12,9 @@ from faster_whisper import WhisperModel
 st.set_page_config(page_title="릴스 → 일본어 텍스트", page_icon="🎌", layout="centered")
 
 
-@st.cache_resource(show_spinner="음성 인식 모델 불러오는 중... (처음 한 번만)")
+@st.cache_resource(max_entries=1, show_spinner="음성 인식 모델 불러오는 중... (처음 한 번만)")
 def load_model(size: str) -> WhisperModel:
-    return WhisperModel(size, device="cpu", compute_type="int8")
+    return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=2, num_workers=1)
 
 
 def download_audio(url: str, workdir: str, cookiefile: str | None = None) -> str:
@@ -54,10 +55,12 @@ def transcribe(path: str, model: WhisperModel):
     segments, _ = model.transcribe(
         load_audio(path),
         language="ja",
-        beam_size=5,
+        beam_size=1,  # 메모리 절약 (무료 서버 1GB 제한)
         vad_filter=True,  # 무음 구간 건너뛰기 → 엉뚱한 문장 생성 방지
     )
-    return [(s.start, s.end, s.text.strip()) for s in segments if s.text.strip()]
+    result = [(s.start, s.end, s.text.strip()) for s in segments if s.text.strip()]
+    gc.collect()
+    return result
 
 
 def to_srt(segs) -> str:
@@ -73,9 +76,9 @@ st.caption("인스타 릴스 링크를 넣으면 일본어 음성을 텍스트�
 with st.expander("⚙️ 설정"):
     model_size = st.selectbox(
         "인식 모델 (클수록 정확하지만 느림)",
-        ["small", "medium", "base"],
+        ["small", "base"],
         index=0,
-        help="무료 클라우드 서버에서는 small 이하를 추천해요.",
+        help="small이 더 정확하고, base는 더 가볍고 빨라요. 서버가 자꾸 멈추면 base를 쓰세요.",
     )
     cookie_file = st.file_uploader(
         "cookies.txt (인스타가 로그인을 요구할 때만)", type=["txt"]
