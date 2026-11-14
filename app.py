@@ -11,10 +11,34 @@ from faster_whisper import WhisperModel
 
 st.set_page_config(page_title="릴스 → 일본어 텍스트", page_icon="🎌", layout="centered")
 
+# ffmpeg: pip 패키지(imageio-ffmpeg)에 들어있는 실행파일 사용 → apt로 700MB 설치할 필요 없음
+try:
+    import imageio_ffmpeg
+
+    FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    FFMPEG = "ffmpeg"
+
+
+def log(stage: str) -> None:
+    """단계별 메모리 사용량을 서버 로그에 남김 (앱이 멈췄을 때 원인 추적용)"""
+    rss = "?"
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS"):
+                    rss = f"{int(line.split()[1]) // 1024}MB"
+    except Exception:
+        pass
+    print(f"[reels-ja] {stage} | 메모리 {rss}", flush=True)
+
 
 @st.cache_resource(max_entries=1, show_spinner="음성 인식 모델 불러오는 중... (처음 한 번만)")
 def load_model(size: str) -> WhisperModel:
-    return WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=2, num_workers=1)
+    log(f"모델 로딩 시작 ({size})")
+    m = WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=2, num_workers=1)
+    log("모델 로딩 완료")
+    return m
 
 
 def download_audio(url: str, workdir: str, cookiefile: str | None = None) -> str:
@@ -43,7 +67,7 @@ def fmt_ts(sec: float) -> str:
 def load_audio(path: str) -> np.ndarray:
     """ffmpeg로 16kHz 모노 오디오를 직접 디코딩 (PyAV 호환성 문제 회피)"""
     out = subprocess.run(
-        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", path,
+        [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path,
          "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
         capture_output=True,
         check=True,
@@ -52,14 +76,18 @@ def load_audio(path: str) -> np.ndarray:
 
 
 def transcribe(path: str, model: WhisperModel):
+    audio = load_audio(path)
+    log(f"오디오 디코딩 완료 ({len(audio) / 16000:.0f}초)")
     segments, _ = model.transcribe(
-        load_audio(path),
+        audio,
         language="ja",
         beam_size=1,  # 메모리 절약 (무료 서버 1GB 제한)
         vad_filter=True,  # 무음 구간 건너뛰기 → 엉뚱한 문장 생성 방지
     )
     result = [(s.start, s.end, s.text.strip()) for s in segments if s.text.strip()]
+    del audio
     gc.collect()
+    log(f"받아쓰기 완료 ({len(result)}문장)")
     return result
 
 
@@ -107,7 +135,9 @@ if go_link or go_file:
                     with open(cpath, "wb") as f:
                         f.write(cookie_file.getvalue())
                 with st.spinner("릴스 다운로드 중..."):
+                    log("다운로드 시작")
                     media = download_audio(url.strip(), tmp, cpath)
+                    log("다운로드 완료")
             else:
                 if not up:
                     st.warning("파일을 올려주세요.")
