@@ -1,7 +1,9 @@
 """인스타 릴스 → 일본어 텍스트 추출 웹앱 (Streamlit + yt-dlp + faster-whisper)"""
 import os
+import subprocess
 import tempfile
 
+import numpy as np
 import streamlit as st
 import yt_dlp
 from faster_whisper import WhisperModel
@@ -37,9 +39,20 @@ def fmt_ts(sec: float) -> str:
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 
+def load_audio(path: str) -> np.ndarray:
+    """ffmpeg로 16kHz 모노 오디오를 직접 디코딩 (PyAV 호환성 문제 회피)"""
+    out = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", path,
+         "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    return np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
+
+
 def transcribe(path: str, model: WhisperModel):
     segments, _ = model.transcribe(
-        path,
+        load_audio(path),
         language="ja",
         beam_size=5,
         vad_filter=True,  # 무음 구간 건너뛰기 → 엉뚱한 문장 생성 방지
@@ -108,6 +121,12 @@ if go_link or go_file:
                 "다운로드 실패했어요. 비공개 계정이거나 인스타가 로그인을 요구하는 경우예요.\n\n"
                 "→ 설정에서 cookies.txt를 올리거나, '파일 올리기' 탭을 써주세요.\n\n"
                 f"상세: {e}"
+            )
+            st.stop()
+        except subprocess.CalledProcessError as e:
+            st.error(
+                "오디오를 읽지 못했어요. 파일이 손상됐거나 지원하지 않는 형식일 수 있어요.\n\n"
+                f"상세: {e.stderr.decode(errors='ignore')[-500:]}"
             )
             st.stop()
 
